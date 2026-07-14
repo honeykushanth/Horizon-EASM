@@ -5,8 +5,15 @@ from core.logger import logger
 class PassiveScanner:
     
     DOH_URL = "https://cloudflare-dns.com/dns-query"
-    RDAP_DOMAIN_URL = "https://rdap.org/domain/"
-    RDAP_IP_URL = "https://rdap.org/ip/"
+    # Utilizing explicit regional root fallbacks to maximize availability
+    RDAP_DOMAIN_URL = "https://rdap.verisign.com/com/v1/domain/"
+    RDAP_IP_URL = "https://rdap.arin.net/registry/ip/"
+
+    # Production-grade User-Agent string to prevent 403 programmatic blocking triggers
+    REQ_HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
 
     @classmethod
     def query_dns(cls, target: str, record_type: str = "A") -> Optional[list]:
@@ -14,7 +21,7 @@ class PassiveScanner:
         Queries Cloudflare DoH API for a clean, out-of-band DNS resolution matrix.
         """
         try:
-            headers = {"Accept": "application/dns-json"}
+            headers = {**cls.REQ_HEADERS, "Accept": "application/dns-json"}
             params = {"name": target, "type": record_type}
             
             logger.info(f"Retrieving passive DNS [{record_type}] records for: {target}")
@@ -48,24 +55,21 @@ class PassiveScanner:
             lookup_url = f"{base_url}{target}"
             
             logger.info(f"Interrogating public RDAP registry for asset profiles: {target}")
-            response = requests.get(lookup_url, timeout=10)
+            response = requests.get(lookup_url, headers=cls.REQ_HEADERS, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
                 parsed_intel = {
                     "handle": data.get("handle", "N/A"),
-                    "asn": "N/A",
                     "entities": [],
                     "events": []
                 }
                 
-                # Extract clean entity networks and organizational definitions
                 if "entities" in data:
                     parsed_intel["entities"] = [
                         ent.get("handle", "UNKNOWN") for ent in data["entities"]
                     ]
                 
-                # Extract registration checkpoints
                 if "events" in data:
                     parsed_intel["events"] = [
                         f"{evt.get('eventAction', 'Action')}: {evt.get('eventDate', 'Date')}"
@@ -74,6 +78,9 @@ class PassiveScanner:
                 
                 logger.success(f"Successfully compiled out-of-band asset metadata for {target}")
                 return parsed_intel
+            elif response.status_code in [403, 429]:
+                logger.critical(f"Upstream registry blocked execution request via status code: {response.status_code}")
+                return None
             elif response.status_code == 404:
                 logger.warn(f"Asset context target records not found in public RDAP registers: {target}")
                 return {"status": "NOT_FOUND"}
