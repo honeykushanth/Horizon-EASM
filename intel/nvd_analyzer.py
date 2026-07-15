@@ -1,4 +1,3 @@
-import re
 import time
 import random
 import requests
@@ -7,134 +6,92 @@ from core.logger import logger
 
 class NVDAnalyzer:
 
-    BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
     
-    @classmethod
-    def synthesize_cpe(cls, service_name: str, banner: str) -> str:
+    BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
-        # Normalize variables
-        product = service_name.lower().strip()
-        version = "*"
-        
-        # Simple extraction pattern for version tracking
-        version_match = re.search(r'([\d.]+)', banner)
-        if version_match:
-            version = version_match.group(1)
+    @classmethod
+    def synthesize_cpe(cls, service_name: str, banner: str) -> Optional[str]:
+
+        try:
+            product = service_name.lower().strip()
+            if not product or product == "unknown":
+                return None
             
-        # Standardize common service mappings to match authoritative dictionary definitions
-        if "msrpc" in product or "rpc" in product:
-            return f"cpe:2.3:o:microsoft:windows:*:*:*:*:*:*:*:*"
-        if "http" in product or "apache" in product:
-            return f"cpe:2.3:a:apache:http_server:{version}:*:*:*:*:*:*:*"
-        if "ssh" in product:
-            return f"cpe:2.3:a:openbsd:openssh:{version}:*:*:*:*:*:*:*"
-            
-        return f"cpe:2.3:a:{product}:{product}:{version}:*:*:*:*:*:*:*"
+            # Extract basic version tracking points out of standard banners
+            version = "any"
+            banner_words = banner.lower().split()
+            for word in banner_words:
+                # Basic heuristic looking for digit blocks (e.g., 8.4p1, 2.4.41)
+                if any(char.isdigit() for char in word) and not word.startswith("cpe"):
+                    version = word.strip("',()[]")
+                    break
+
+            # Synthesize into standardized CPE 2.3 application scheme format
+            synthesized = f"cpe:2.3:a:{product}:{product}:{version}:*:*:*:*:*:*:*"
+            return synthesized
+        except Exception as e:
+            logger.critical(f"Failed parsing version strings for CPE fallback: {str(e)}")
+            return None
 
     @classmethod
-    def query_nvd_api(cls, cpe_string: str, retries: int = 3, backoff_factor: float = 2.0) -> List[Dict[str, Any]]:
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
-        params = {"cpeName": cpe_string}
-        current_delay = backoff_factor
-
-        logger.info(f"Interrogating NIST NVD API v2.0 database for: {cpe_string}")
-
-        for attempt in range(retries):
-            try:
-                # Standardized connection thread execution matrix
-                response = requests.get(cls.BASE_URL, headers=headers, params=params, timeout=10)
-                
-                if response.status_code == 403 or response.status_code == 503:
-                    logger.warn(f"NIST NVD API rate limit tripped (Status {response.status_code}). Engaging retry strategy...")
-                elif response.status_code == 200:
-                    data = response.json()
-                    return cls._parse_nvd_response(data)
-                else:
-                    logger.critical(f"NVD API returned unexpected processing boundary: {response.status_code}")
-                    
-            except requests.RequestException as e:
-                logger.warn(f"Network transport anomaly encountered during NVD API lookup: {str(e)}")
-
-            # Algorithmic calculation of exponential delay combined with random jitter vectors
-            jitter = random.uniform(0.5, 1.5)
-            sleep_time = (current_delay * (attempt + 1)) + jitter
-            logger.info(f"Backoff applied. Pausing execution window for {sleep_time:.2f} seconds before attempt {attempt + 2}...")
-            time.sleep(sleep_time)
-
-        logger.critical(f"Exhausted API query thresholds. Dropping parsing pipeline contexts for: {cpe_string}")
-        return []
-
-    @classmethod
-    def _parse_nvd_response(cls, response_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def fetch_cves(cls, cpe_string: str, max_retries: int = 3) -> List[Dict[str, Any]]:
 
         vulnerabilities = []
-        cve_items = response_data.get("vulnerabilities", [])
+        params = {"cpeName": cpe_string}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Horizon-EASM/1.0"}
         
-        for item in cve_items:
-            cve_wrapper = item.get("cve", {})
-            cve_id = cve_wrapper.get("id", "UNKNOWN-CVE")
-            descriptions = cve_wrapper.get("descriptions", [])
-            summary = descriptions[0].get("value", "No operational metadata provided.") if descriptions else ""
-            
-            # Default threat values
-            cvss_score = 0.0
-            severity = "UNKNOWN"
-            
-            # Dynamic extraction matching CVSS v3.1 and v3.0 matrices
-            metrics = cve_wrapper.get("metrics", {})
-            v31_metrics = metrics.get("cvssMetricV31", []) or metrics.get("cvssMetricV30", [])
-            
-            if v31_metrics:
-                cvss_data = v31_metrics[0].get("cvssData", {})
-                cvss_score = cvss_data.get("baseScore", 0.0)
-                severity = cvss_data.get("baseSeverity", "UNKNOWN")
-            
-            vulnerabilities.append({
-                "cve_id": cve_id,
-                "cvss_score": cvss_score,
-                "severity": severity,
-                "summary": summary[:120] + "..." if len(summary) > 120 else summary
-            })
-            
-        return vulnerabilities
+        # Strip trailing legacy wildcards if accidentally carried over from Nmap
+        if cpe_string.endswith(":*"):
+            params["cpeName"] = cpe_string[:-2]
 
-    @classmethod
-    def analyze_asset_profile(cls, scan_profile: Dict[str, Any]) -> Dict[str, Any]:
-
-        threat_profile = {
-            "host": scan_profile.get("host"),
-            "status": scan_profile.get("status"),
-            "vulnerabilities_mapped": []
-        }
-
-        protocols = scan_profile.get("protocols", {})
-        for proto, ports in protocols.items():
-            for port, info in ports.items():
-                cpe_targets = info.get("cpe", [])
+        delay = 2.0  # Initial base delay factor for network rate limits
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(cls.BASE_URL, params=params, headers=headers, timeout=10)
                 
-                # Dynamic fallback if standard Nmap discovery is unpopulated
-                if not cpe_targets:
-                    fallback = cls.synthesize_cpe(info.get("service"), info.get("banner"))
-                    cpe_targets = [fallback]
+                # Check for strict NIST rate-limiting firewall constraints (HTTP 403 / 503)
+                if response.status_code in [403, 503, 429]:
+                    jitter = random.uniform(0.5, 1.5)
+                    sleep_time = (delay * (2 ** attempt)) + jitter
+                    logger.warn(f"NIST NVD Rate Limit Hit (Status: {response.status_code}). Backing off for {sleep_time:.2f}s...")
+                    time.sleep(sleep_time)
+                    continue
                     
-                for cpe in cpe_targets:
-                    # Upgrade legacy hardware syntax formatting indicators to standard CPE 2.3
-                    if cpe.startswith("cpe:/"):
-                        cpe = cpe.replace("cpe:/", "cpe:2.3:")
-                        
-                    findings = cls.query_nvd_api(cpe)
-                    for vuln in findings:
-                        logger.success(
-                            f"Live Exploitation Vector Found: Port [{port}/{proto}] -> "
-                            f"Mapped to Identifier: {vuln['cve_id']} | Severity Level: {vuln['severity']} [CVSS: {vuln['cvss_score']}]"
-                        )
-                        threat_profile["vulnerabilities_mapped"].append({
-                            "port": port,
-                            "protocol": proto,
-                            "service": info.get("service"),
-                            **vuln
-                        })
-        return threat_profile
+                response.raise_for_status()
+                data = response.json()
+                
+                # Unpack complex nested JSON vulnerability matrices from NIST schema
+                vulnerabilities_list = data.get("vulnerabilities", [])
+                for item in vulnerabilities_list:
+                    cve_data = item.get("cve", {})
+                    cve_id = cve_data.get("id")
+                    
+                    # Parse CVSS Metrics (Prioritize v3.1, fallback to legacy v2.0 profiles)
+                    metrics = cve_data.get("metrics", {})
+                    cvss_score = 0.0
+                    severity = "UNKNOWN"
+                    
+                    if "cvssMetricV31" in metrics:
+                        v31_info = metrics["cvssMetricV31"][0].get("cvssData", {})
+                        cvss_score = v31_info.get("baseScore", 0.0)
+                        severity = v31_info.get("baseSeverity", "UNKNOWN")
+                    elif "cvssMetricV2" in metrics:
+                        v2_info = metrics["cvssMetricV2"][0].get("cvssData", {})
+                        cvss_score = v2_info.get("baseScore", 0.0)
+                        severity = metrics["cvssMetricV2"][0].get("baseSeverity", "UNKNOWN")
+
+                    vulnerabilities.append({
+                        "cve_id": cve_id,
+                        "cvss": cvss_score,
+                        "severity": severity
+                    })
+                
+                return vulnerabilities
+
+            except requests.RequestException as e:
+                if attempt == max_retries - 1:
+                    logger.critical(f"Network transport fault during NVD intelligence collection: {str(e)}")
+                time.sleep(delay)
+                
+        return vulnerabilities
