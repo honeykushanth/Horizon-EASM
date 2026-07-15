@@ -6,7 +6,6 @@ from core.logger import logger
 
 class NVDAnalyzer:
 
-    
     BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 
     @classmethod
@@ -21,7 +20,6 @@ class NVDAnalyzer:
             version = "any"
             banner_words = banner.lower().split()
             for word in banner_words:
-                # Basic heuristic looking for digit blocks (e.g., 8.4p1, 2.4.41)
                 if any(char.isdigit() for char in word) and not word.startswith("cpe"):
                     version = word.strip("',()[]")
                     break
@@ -40,17 +38,21 @@ class NVDAnalyzer:
         params = {"cpeName": cpe_string}
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Horizon-EASM/1.0"}
         
-        # Strip trailing legacy wildcards if accidentally carried over from Nmap
         if cpe_string.endswith(":*"):
             params["cpeName"] = cpe_string[:-2]
 
-        delay = 2.0  # Initial base delay factor for network rate limits
+        delay = 2.0
         
         for attempt in range(max_retries):
             try:
                 response = requests.get(cls.BASE_URL, params=params, headers=headers, timeout=10)
                 
-                # Check for strict NIST rate-limiting firewall constraints (HTTP 403 / 503)
+                # Gracefully intercept empty dictionary definitions (HTTP 404)
+                if response.status_code == 404:
+                    logger.info(f"No matching vulnerability indexes found in NIST dictionary for target CPE.")
+                    return vulnerabilities
+
+                # Check for strict NIST rate-limiting firewall constraints (HTTP 403 / 503 / 429)
                 if response.status_code in [403, 503, 429]:
                     jitter = random.uniform(0.5, 1.5)
                     sleep_time = (delay * (2 ** attempt)) + jitter
@@ -67,7 +69,6 @@ class NVDAnalyzer:
                     cve_data = item.get("cve", {})
                     cve_id = cve_data.get("id")
                     
-                    # Parse CVSS Metrics (Prioritize v3.1, fallback to legacy v2.0 profiles)
                     metrics = cve_data.get("metrics", {})
                     cvss_score = 0.0
                     severity = "UNKNOWN"
