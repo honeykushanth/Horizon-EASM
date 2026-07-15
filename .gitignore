@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Horizon-EASM Operational Artifacts
+report.json
+report.md
+
+# Python Runtime Environment Outputs
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
