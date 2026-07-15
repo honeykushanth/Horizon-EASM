@@ -1,4 +1,6 @@
 import nmap
+import os
+import sys
 from typing import Dict, Any, Optional
 from core.logger import logger
 
@@ -12,10 +14,21 @@ class ActiveScanner:
     def perform_scan(cls, target: str, scan_arguments: str = "-sV -F -T4") -> Optional[Dict[str, Any]]:
         """
         Executes an active network scan against a sanitized FQDN or IPv4 target.
+        Includes cross-platform path checking to find common native Nmap installations.
         """
         try:
             logger.info(f"Initializing active network scanner wrapper layer for target: {target}")
             logger.info(f"Executing Nmap structural scan engine with parameters: '{scan_arguments}'")
+            
+            # Enterprise Check: Add common installation fallback search directories to system path
+            if sys.platform == "win32":
+                common_nmap_paths = [
+                    r"C:\Program Files (x86)\Nmap",
+                    r"C:\Program Files\Nmap"
+                ]
+                for nmap_path in common_nmap_paths:
+                    if os.path.exists(nmap_path) and nmap_path not in os.environ["PATH"]:
+                        os.environ["PATH"] += os.pathsep + nmap_path
             
             nm = nmap.PortScanner()
             nm.scan(hosts=target, arguments=scan_arguments)
