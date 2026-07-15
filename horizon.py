@@ -59,9 +59,20 @@ def main():
                 for port, info in ports.items():
                     cpe_list = info.get("cpe", [])
                     banner = info.get("banner", "")
+                    service_name = info.get("service", "unknown")
                     
-                    # Call fallback synthesizer algorithm engineered in Phase 4
-                    cpe_23 = NVDAnalyzer.synthesize_cpe(cpe_list, banner)
+                    cpe_23 = None
+                    # Evaluate structural CPE presence
+                    if cpe_list and len(cpe_list) > 0:
+                        raw_cpe = cpe_list[0]
+                        # Normalize legacy Nmap format cpe:/o:... to official cpe:2.3:o:...
+                        if raw_cpe.startswith("cpe:/"):
+                            cpe_23 = raw_cpe.replace("cpe:/", "cpe:2.3:")
+                        else:
+                            cpe_23 = raw_cpe
+                    else:
+                        # Fallback synthesis algorithm engineered in Phase 4 using accurate string signatures
+                        cpe_23 = NVDAnalyzer.synthesize_cpe(service_name, banner)
                     
                     if cpe_23:
                         logger.info(f"Interrogating NIST NVD database for Port [{port}/{proto}] -> {cpe_23}")
