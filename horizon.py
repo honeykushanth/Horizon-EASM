@@ -7,6 +7,21 @@ from recon.active import ActiveScanner
 from intel.nvd_analyzer import NVDAnalyzer
 from core.reporter import HorizonReporter
 
+def pad_cpe_23(cpe_str: str) -> str:
+
+    # Normalize legacy Nmap prefix cpe:/ to cpe:2.3:
+    if cpe_str.startswith("cpe:/"):
+        cpe_str = cpe_str.replace("cpe:/", "cpe:2.3:")
+    
+    fields = cpe_str.split(":")
+    
+    # If it is formatted as a legacy prefix without explicit version fields
+    if len(fields) < 13:
+        needed = 13 - len(fields)
+        cpe_str += ":*" * needed
+        
+    return cpe_str
+
 def main():
     parser = argparse.ArgumentParser(
         description="Horizon-EASM: Production-Grade External Attack Surface Management Framework.",
@@ -64,21 +79,20 @@ def main():
                     cpe_23 = None
                     # Evaluate structural CPE presence
                     if cpe_list and len(cpe_list) > 0:
-                        raw_cpe = cpe_list[0]
-                        # Normalize legacy Nmap format cpe:/o:... to official cpe:2.3:o:...
-                        if raw_cpe.startswith("cpe:/"):
-                            cpe_23 = raw_cpe.replace("cpe:/", "cpe:2.3:")
-                        else:
-                            cpe_23 = raw_cpe
+                        # Normalize and pad the native Nmap discoverable CPE
+                        cpe_23 = pad_cpe_23(cpe_list[0])
                     else:
-                        # Fallback synthesis algorithm engineered in Phase 4 using accurate string signatures
-                        cpe_23 = NVDAnalyzer.synthesize_cpe(service_name, banner)
+                        # Call fallback synthesis algorithm engineered in Phase 4
+                        synthesized = NVDAnalyzer.synthesize_cpe(service_name, banner)
+                        if synthesized:
+                            cpe_23 = pad_cpe_23(synthesized)
                     
                     if cpe_23:
                         logger.info(f"Interrogating NIST NVD database for Port [{port}/{proto}] -> {cpe_23}")
                         vulns = NVDAnalyzer.fetch_cves(cpe_23)
                         if vulns:
                             master_manifest["vulnerabilities"][str(port)] = vulns
+                            logger.success(f"Successfully mapped {len(vulns)} threat vector fields for Port [{port}/{proto}]")
         else:
             logger.critical("Active discovery modules returned dead tracking metrics or offline state.")
 
